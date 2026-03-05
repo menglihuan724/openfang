@@ -7575,10 +7575,16 @@ pub async fn update_agent_identity(
     };
 
     match state.kernel.registry.update_identity(agent_id, identity) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "ok", "agent_id": id})),
-        ),
+        Ok(()) => {
+            // Persist identity to SQLite
+            if let Some(entry) = state.kernel.registry.get(agent_id) {
+                let _ = state.kernel.memory.save_agent(&entry);
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "ok", "agent_id": id})),
+            )
+        }
         Err(_) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Agent not found"})),
