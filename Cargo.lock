@@ -3812,7 +3812,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-api"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3852,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-channels"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "aes",
  "async-trait",
@@ -3870,6 +3870,7 @@ dependencies = [
  "mailparse",
  "native-tls",
  "openfang-types",
+ "prost",
  "regex-lite",
  "reqwest 0.12.28",
  "roxmltree",
@@ -3889,7 +3890,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-cli"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -3916,7 +3917,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-desktop"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "axum",
  "open",
@@ -3942,7 +3943,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-extensions"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3970,7 +3971,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-hands"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3987,7 +3988,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-kernel"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4025,7 +4026,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-memory"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4044,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-migrate"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -4063,7 +4064,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-runtime"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4097,7 +4098,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-skills"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "hex",
@@ -4120,7 +4121,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-types"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4139,7 +4140,7 @@ dependencies = [
 
 [[package]]
 name = "openfang-wire"
-version = "0.4.9"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4765,6 +4766,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "prost"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -8818,7 +8842,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.4.9"
+version = "0.5.1"
 
 [[package]]
 name = "yoke"

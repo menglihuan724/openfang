@@ -53,6 +53,7 @@ use openfang_channels::mumble::MumbleAdapter;
 use openfang_channels::ntfy::NtfyAdapter;
 use openfang_channels::webhook::WebhookAdapter;
 use openfang_channels::wecom::WeComAdapter;
+use openfang_channels::openclaw::{OpenClawAdapter, OpenClawConfig};
 use openfang_kernel::OpenFangKernel;
 use openfang_types::agent::AgentId;
 use std::sync::Arc;
@@ -810,6 +811,8 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             "webhook" => channels.webhook.as_ref().map(|c| c.overrides.clone()),
             "linkedin" => channels.linkedin.as_ref().map(|c| c.overrides.clone()),
             "wecom" => channels.wecom.as_ref().map(|c| c.overrides.clone()),
+            // Wave 6
+            "openclaw" => channels.openclaw.as_ref().map(|c| c.overrides.clone()),
             _ => None,
         }
     }
@@ -1114,7 +1117,8 @@ pub async fn start_channel_bridge_with_config(
         || config.ntfy.is_some()
         || config.gotify.is_some()
         || config.webhook.is_some()
-        || config.linkedin.is_some();
+        || config.linkedin.is_some()
+        || config.openclaw.is_some();
 
     if !has_any {
         return (None, Vec::new());
@@ -1676,6 +1680,21 @@ pub async fn start_channel_bridge_with_config(
             ));
             adapters.push((adapter, li_config.default_agent.clone()));
         }
+    }
+
+    // ── Wave 6 ──────────────────────────────────────────────────
+
+    // OpenClaw Android Node Gateway
+    if let Some(ref oc_config) = config.openclaw {
+        let adapter = Arc::new(OpenClawAdapter::new(
+            oc_config.gateway_host.clone(),
+            oc_config.auth_token.clone(),
+            oc_config.device_id.clone(),
+            Duration::from_secs(oc_config.heartbeat_secs),
+            Duration::from_secs(oc_config.command_timeout_secs),
+            Duration::from_secs(oc_config.reconnect_delay_secs),
+        ));
+        adapters.push((adapter, oc_config.default_agent.clone()));
     }
 
     if adapters.is_empty() {

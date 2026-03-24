@@ -1312,6 +1312,52 @@ impl Default for KernelConfig {
     }
 }
 
+// ── Wave 6 — OpenClaw Android Node Gateway ────────────────────────────────
+
+/// OpenClaw channel adapter configuration.
+///
+/// Connects to an OpenClaw Gateway as an Android device node via WebSocket,
+/// receiving command requests (screenshot, ui_tree, tap, swipe, etc.) and
+/// exposing them as OpenFang channel messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpenClawConfig {
+    /// OpenClaw Gateway host (e.g., "192.168.1.100:8080").
+    pub gateway_host: String,
+    /// Auth token for gateway authentication (empty = no auth).
+    #[serde(default)]
+    pub auth_token: String,
+    /// Device ID to identify this node (auto-generated if empty).
+    #[serde(default)]
+    pub device_id: String,
+    /// Default agent name to route commands to.
+    pub default_agent: Option<String>,
+    /// Heartbeat interval in seconds (0 = disabled). Default: 30.
+    pub heartbeat_secs: u64,
+    /// Command timeout in seconds. Default: 60.
+    pub command_timeout_secs: u64,
+    /// Reconnect delay on disconnect in seconds. Default: 5.
+    pub reconnect_delay_secs: u64,
+    /// Per-channel behavior overrides.
+    #[serde(default)]
+    pub overrides: ChannelOverrides,
+}
+
+impl Default for OpenClawConfig {
+    fn default() -> Self {
+        Self {
+            gateway_host: String::new(),
+            auth_token: String::new(),
+            device_id: String::new(),
+            default_agent: None,
+            heartbeat_secs: 30,
+            command_timeout_secs: 60,
+            reconnect_delay_secs: 5,
+            overrides: ChannelOverrides::default(),
+        }
+    }
+}
+
 impl KernelConfig {
     /// Resolved workspaces root directory.
     pub fn effective_workspaces_dir(&self) -> PathBuf {
@@ -1647,6 +1693,9 @@ pub struct ChannelsConfig {
     pub linkedin: Option<LinkedInConfig>,
     /// WeCom/WeChat Work configuration (None = disabled).
     pub wecom: Option<WeComConfig>,
+    // Wave 6 — External agent/AI framework integrations
+    /// OpenClaw Android Node Gateway configuration (None = disabled).
+    pub openclaw: Option<OpenClawConfig>,
 }
 
 /// Telegram channel adapter configuration.
@@ -1674,6 +1723,11 @@ pub struct TelegramConfig {
     /// Per-channel behavior overrides.
     #[serde(default)]
     pub overrides: ChannelOverrides,
+    /// Commands that are forbidden by default for agents on this channel.
+    /// Agents cannot enable these commands via config unless explicitly overridden.
+    /// (Telegram-specific; other channels ignore this.)
+    #[serde(default)]
+    pub default_forbidden_commands: Vec<String>,
 }
 
 impl Default for TelegramConfig {
@@ -1686,6 +1740,7 @@ impl Default for TelegramConfig {
             api_url: None,
             default_chat_id: None,
             overrides: ChannelOverrides::default(),
+            default_forbidden_commands: Vec::new(),
         }
     }
 }

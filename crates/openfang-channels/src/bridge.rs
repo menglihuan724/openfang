@@ -224,6 +224,22 @@ pub trait ChannelBridgeHandle: Send + Sync {
     async fn a2a_agents_text(&self) -> String {
         "A2A agents not available.".to_string()
     }
+
+    /// Send a node.invokeResult frame over the OpenClaw WebSocket connection.
+    ///
+    /// `invoke_id` and `node_id` are read from the incoming message metadata.
+    /// `ok` indicates success/failure; `payload` is the JSON result or error.
+    ///
+    /// Returns immediately (fire-and-forget) -- errors are logged but not returned.
+    /// Default implementation: no-op (only OpenClaw adapters override this).
+    async fn send_openclaw_invoke_result(
+        &self,
+        _invoke_id: &str,
+        _node_id: &str,
+        _ok: bool,
+        _payload: serde_json::Value,
+    ) {
+    }
 }
 
 /// Per-channel rate limiter tracking message timestamps per user.

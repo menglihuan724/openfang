@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use openfang_types::agent::AgentId;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::collections::HashMap;
 use std::pin::Pin;
 
@@ -276,6 +277,21 @@ pub trait ChannelAdapter: Send + Sync {
     /// logged regardless of this setting.
     fn suppress_error_responses(&self) -> bool {
         false
+    }
+
+    /// Return the OpenClaw bridge handle if this adapter is an OpenClaw adapter.
+    ///
+    /// This allows the bridge to route `node.invokeResult` frames back over the
+    /// correct WebSocket connection without the kernel needing to know about
+    /// `OpenClawBridgeHandle` directly (which would create a circular dependency).
+    ///
+    /// Returns `None` for non-OpenClaw adapters. When `Some` is returned, the
+    /// value is an `Arc` of the internal handle — callers downcast it using
+    /// `Arc::downcast::<OpenClawBridgeHandle>()`.
+    ///
+    /// Default implementation returns `None`.
+    fn get_openclaw_bridge_handle(self: Arc<Self>) -> Option<Arc<dyn Any + Send + Sync>> {
+        None
     }
 }
 
