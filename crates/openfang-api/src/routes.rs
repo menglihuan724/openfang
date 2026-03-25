@@ -40,6 +40,8 @@ pub struct AppState {
     /// Avoids blocking the `/api/providers` endpoint on TCP timeouts to
     /// unreachable local services. 60-second TTL.
     pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
+    /// OpenClaw Gateway server — accepts connections from Android nodes.
+    pub openclaw_gateway: Option<Arc<openfang_channels::openclaw_gateway::OpenClawGateway>>,
 }
 
 /// POST /api/agents — Spawn a new agent.

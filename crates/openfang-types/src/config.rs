@@ -1317,43 +1317,104 @@ impl Default for KernelConfig {
 /// OpenClaw channel adapter configuration.
 ///
 /// Connects to an OpenClaw Gateway as an Android device node via WebSocket,
-/// receiving command requests (screenshot, ui_tree, tap, swipe, etc.) and
-/// exposing them as OpenFang channel messages.
+/// OpenClaw Gateway Server configuration.
+/// Accepts connections from OpenClaw Android nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct OpenClawConfig {
-    /// OpenClaw Gateway host (e.g., "192.168.1.100:8080").
-    pub gateway_host: String,
-    /// Auth token for gateway authentication (empty = no auth).
+pub struct OpenClawGatewayConfig {
+    /// Enable the OpenClaw Gateway server.
     #[serde(default)]
-    pub auth_token: String,
-    /// Device ID to identify this node (auto-generated if empty).
+    pub enabled: bool,
+    /// Listen address (e.g., "0.0.0.0").
+    #[serde(default = "default_openclaw_gateway_host")]
+    pub host: String,
+    /// Listen port (default: 18789).
+    #[serde(default = "default_openclaw_gateway_port")]
+    pub port: u16,
+    /// Optional auth token for gateway access.
     #[serde(default)]
-    pub device_id: String,
-    /// Default agent name to route commands to.
-    pub default_agent: Option<String>,
-    /// Heartbeat interval in seconds (0 = disabled). Default: 30.
-    pub heartbeat_secs: u64,
-    /// Command timeout in seconds. Default: 60.
-    pub command_timeout_secs: u64,
-    /// Reconnect delay on disconnect in seconds. Default: 5.
-    pub reconnect_delay_secs: u64,
-    /// Per-channel behavior overrides.
+    pub auth_token: Option<String>,
+    /// Heartbeat interval in seconds (default: 30).
+    #[serde(default = "default_openclaw_gateway_tick_interval")]
+    pub tick_interval_secs: u64,
+    /// Maximum number of connected nodes (default: 10).
+    #[serde(default = "default_openclaw_gateway_max_nodes")]
+    pub max_nodes: usize,
+    /// Commands to expose to nodes.
     #[serde(default)]
-    pub overrides: ChannelOverrides,
+    pub commands: Vec<String>,
 }
 
-impl Default for OpenClawConfig {
+fn default_openclaw_gateway_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_openclaw_gateway_port() -> u16 {
+    18_789
+}
+
+fn default_openclaw_gateway_tick_interval() -> u64 {
+    30
+}
+
+fn default_openclaw_gateway_max_nodes() -> usize {
+    10
+}
+
+impl Default for OpenClawGatewayConfig {
     fn default() -> Self {
         Self {
-            gateway_host: String::new(),
-            auth_token: String::new(),
-            device_id: String::new(),
-            default_agent: None,
-            heartbeat_secs: 30,
-            command_timeout_secs: 60,
-            reconnect_delay_secs: 5,
-            overrides: ChannelOverrides::default(),
+            enabled: false,
+            host: default_openclaw_gateway_host(),
+            port: default_openclaw_gateway_port(),
+            auth_token: None,
+            tick_interval_secs: default_openclaw_gateway_tick_interval(),
+            max_nodes: default_openclaw_gateway_max_nodes(),
+            commands: vec![
+                // Canvas commands
+                "canvas.present".to_string(),
+                "canvas.hide".to_string(),
+                "canvas.navigate".to_string(),
+                "canvas.eval".to_string(),
+                "canvas.snapshot".to_string(),
+                "canvas.a2ui.push".to_string(),
+                "canvas.a2ui.push_jsonl".to_string(),
+                "canvas.a2ui.reset".to_string(),
+                // System/Device commands
+                "system.notify".to_string(),
+                "device.status".to_string(),
+                "device.info".to_string(),
+                "device.permissions".to_string(),
+                "device.health".to_string(),
+                // Camera commands
+                "camera.list".to_string(),
+                "camera.snap".to_string(),
+                "camera.clip".to_string(),
+                // Location commands
+                "location.get".to_string(),
+                // Notification commands
+                "notifications.list".to_string(),
+                "notifications.actions".to_string(),
+                // Photos commands
+                "photos.latest".to_string(),
+                // Contact commands
+                "contacts.search".to_string(),
+                "contacts.add".to_string(),
+                // Calendar commands
+                "calendar.events".to_string(),
+                "calendar.add".to_string(),
+                // Motion commands
+                "motion.activity".to_string(),
+                "motion.pedometer".to_string(),
+                // SMS commands
+                "sms.send".to_string(),
+                "sms.search".to_string(),
+                // CallLog commands
+                "calllog.search".to_string(),
+                // Debug commands
+                "debug.logs".to_string(),
+                "debug.ed25519".to_string(),
+            ],
         }
     }
 }
@@ -1694,8 +1755,9 @@ pub struct ChannelsConfig {
     /// WeCom/WeChat Work configuration (None = disabled).
     pub wecom: Option<WeComConfig>,
     // Wave 6 — External agent/AI framework integrations
-    /// OpenClaw Android Node Gateway configuration (None = disabled).
-    pub openclaw: Option<OpenClawConfig>,
+    /// OpenClaw Gateway Server configuration (accepts Android node connections).
+    #[serde(default)]
+    pub openclaw_gateway: Option<OpenClawGatewayConfig>,
 }
 
 /// Telegram channel adapter configuration.

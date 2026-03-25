@@ -354,6 +354,7 @@ fn channel_type_to_str(ct: &ChannelType) -> &str {
         ChannelType::Mattermost => "mattermost",
         ChannelType::WebChat => "webchat",
         ChannelType::CLI => "cli",
+        ChannelType::OpenClawGateway => "openclaw_gateway",
         ChannelType::Custom(s) => s.as_str(),
     }
 }

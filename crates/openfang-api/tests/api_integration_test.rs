@@ -78,6 +78,7 @@ async fn start_test_server_with_provider(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        openclaw_gateway: None,
     });
 
     let app = Router::new()
@@ -707,6 +708,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        openclaw_gateway: None,
     });
 
     let api_key = state.kernel.config.api_key.trim().to_string();

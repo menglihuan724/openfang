@@ -8,6 +8,7 @@ use crate::webchat;
 use crate::ws;
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
+use openfang_channels::openclaw_gateway::OpenClawGateway;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use std::time::Instant;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -42,6 +43,31 @@ pub async fn build_router(
     let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
 
     let channels_config = kernel.config.channels.clone();
+
+    // Start OpenClaw Gateway server if configured
+    let openclaw_gateway: Option<Arc<OpenClawGateway>> = if let Some(ref gateway_config) = channels_config.openclaw_gateway {
+        if gateway_config.enabled {
+            let gateway = OpenClawGateway::new(gateway_config);
+            match gateway.start().await {
+                Ok(()) => {
+                    info!(
+                        "OpenClaw Gateway server started on {}:{}",
+                        gateway_config.host, gateway_config.port
+                    );
+                    Some(Arc::new(gateway))
+                }
+                Err(e) => {
+                    warn!("Failed to start OpenClaw Gateway: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
         started_at: Instant::now(),
@@ -51,6 +77,7 @@ pub async fn build_router(
         shutdown_notify: Arc::new(tokio::sync::Notify::new()),
         clawhub_cache: dashmap::DashMap::new(),
         provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        openclaw_gateway,
     });
 
     // CORS: allow localhost origins by default. If API key is set, the API

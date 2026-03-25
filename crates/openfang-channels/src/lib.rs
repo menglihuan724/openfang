@@ -53,4 +53,5 @@ pub mod ntfy;
 pub mod webhook;
 pub mod wecom;
 // Wave 6 — External agent/AI framework integrations
-pub mod openclaw;
+pub mod openclaw_gateway;
+pub mod openclaw_commands;

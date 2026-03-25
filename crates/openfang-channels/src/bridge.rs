@@ -411,6 +411,7 @@ fn channel_type_str(channel: &crate::types::ChannelType) -> &str {
         crate::types::ChannelType::Mattermost => "mattermost",
         crate::types::ChannelType::WebChat => "webchat",
         crate::types::ChannelType::CLI => "cli",
+        crate::types::ChannelType::OpenClawGateway => "openclaw_gateway",
         crate::types::ChannelType::Custom(s) => s.as_str(),
     }
 }
