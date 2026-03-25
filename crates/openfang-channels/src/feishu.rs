@@ -261,18 +261,23 @@ impl FeishuAdapter {
     /// Create a new Feishu adapter in WebSocket mode.
     ///
     /// WebSocket mode does not require a public IP or webhook configuration.
-    pub fn new_websocket(app_id: String, app_secret: String) -> Self {
+    pub fn new_websocket(
+        app_id: String,
+        app_secret: String,
+        region: FeishuRegion,
+        bot_names: Vec<String>,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         Self {
             app_id,
             app_secret: Zeroizing::new(app_secret),
             connection_mode: FeishuConnectionMode::WebSocket,
             webhook_port: 0,
-            region: FeishuRegion::Cn,
+            region,
             webhook_path: String::new(),
             verification_token: None,
             encrypt_key: None,
-            bot_names: Vec::new(),
+            bot_names,
             client: reqwest::Client::new(),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
@@ -1795,10 +1800,27 @@ mod tests {
         let adapter = FeishuAdapter::new_websocket(
             "cli_abc123".to_string(),
             "app-secret-456".to_string(),
+            FeishuRegion::Cn,
+            vec!["TestBot".to_string()],
         );
         assert_eq!(adapter.name(), "feishu");
         assert_eq!(adapter.connection_mode, FeishuConnectionMode::WebSocket);
         assert_eq!(adapter.webhook_port, 0); // not used in WS mode
+        assert_eq!(adapter.region, FeishuRegion::Cn);
+        assert_eq!(adapter.bot_names, vec!["TestBot".to_string()]);
+    }
+
+    #[test]
+    fn test_feishu_websocket_adapter_intl_region() {
+        let adapter = FeishuAdapter::new_websocket(
+            "cli_abc123".to_string(),
+            "app-secret-456".to_string(),
+            FeishuRegion::Intl,
+            Vec::new(),
+        );
+        assert_eq!(adapter.name(), "lark");
+        assert_eq!(adapter.connection_mode, FeishuConnectionMode::WebSocket);
+        assert_eq!(adapter.region, FeishuRegion::Intl);
     }
 
     #[test]

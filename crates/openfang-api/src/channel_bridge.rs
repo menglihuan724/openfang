@@ -1436,6 +1436,7 @@ pub async fn start_channel_bridge_with_config(
                 .encrypt_key_env
                 .as_ref()
                 .and_then(|env| read_token(env, "Feishu encrypt_key"));
+            info!("Feishu channel mode from config: {:?}", fs_config.mode);
             let adapter = match fs_config.mode {
                 FeishuMode::Webhook => Arc::new(FeishuAdapter::with_config(
                     fs_config.app_id.clone(),
@@ -1450,6 +1451,8 @@ pub async fn start_channel_bridge_with_config(
                 FeishuMode::Websocket => Arc::new(FeishuAdapter::new_websocket(
                     fs_config.app_id.clone(),
                     secret,
+                    region,
+                    fs_config.bot_names.clone(),
                 )),
             };
             adapters.push((adapter, fs_config.default_agent.clone()));
