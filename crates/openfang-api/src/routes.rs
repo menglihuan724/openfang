@@ -3581,6 +3581,91 @@ pub async fn marketplace_search(
 }
 
 // ---------------------------------------------------------------------------
+// OpenClaw Gateway Node endpoints
+// ---------------------------------------------------------------------------
+
+/// GET /api/openclaw/nodes — List connected OpenClaw nodes (Android devices).
+pub async fn openclaw_nodes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let nodes = if let Some(ref gateway) = state.openclaw_gateway {
+        let registry = gateway.registry();
+        registry
+            .all()
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "device_id": n.device_id,
+                    "display_name": n.display_name,
+                    "platform": n.platform,
+                    "connected_at": n.connected_at.to_rfc3339(),
+                    "remote_addr": n.remote_addr.to_string(),
+                    "role": n.role,
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+
+    Json(serde_json::json!({
+        "nodes": nodes,
+        "total": nodes.len()
+    }))
+}
+
+/// GET /api/openclaw/nodes/{device_id} — Get details of a specific OpenClaw node.
+pub async fn openclaw_node_details(
+    State(state): State<Arc<AppState>>,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(ref gateway) = state.openclaw_gateway {
+        let registry = gateway.registry();
+        if let Some(node) = registry.get(&device_id) {
+            return Json(serde_json::json!({
+                "device_id": node.device_id,
+                "display_name": node.display_name,
+                "platform": node.platform,
+                "device_family": node.device_family,
+                "connected_at": node.connected_at.to_rfc3339(),
+                "remote_addr": node.remote_addr.to_string(),
+                "role": node.role,
+                "commands": node.commands,
+                "caps": node.caps,
+            }));
+        }
+    }
+
+    Json(serde_json::json!({"error": "Node not found"}))
+}
+
+/// POST /api/openclaw/nodes/{device_id}/send — Send a message to an OpenClaw node.
+///
+/// This sends a `node.invoke.request` event to the specified Android device.
+pub async fn openclaw_send_to_node(
+    State(state): State<Arc<AppState>>,
+    Path(device_id): Path<String>,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Some(ref gateway) = state.openclaw_gateway {
+        let registry = gateway.registry();
+        if let Some(node) = registry.get(&device_id) {
+            let command = payload["command"].as_str().unwrap_or("ping");
+            let params = payload["params"].clone();
+            let invoke_id = uuid::Uuid::new_v4().to_string();
+            let timeout_ms = payload["timeout_ms"].as_u64().unwrap_or(30000);
+
+            if node.send_invoke(&invoke_id, command, params, timeout_ms).is_ok() {
+                return Json(serde_json::json!({
+                    "ok": true,
+                    "invoke_id": invoke_id
+                }));
+            }
+        }
+    }
+
+    Json(serde_json::json!({"ok": false, "error": "Node not found or send failed"}))
+}
+
+// ---------------------------------------------------------------------------
 // ClawHub (OpenClaw ecosystem) endpoints
 // ---------------------------------------------------------------------------
 

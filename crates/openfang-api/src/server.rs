@@ -366,6 +366,19 @@ pub async fn build_router(
             "/api/marketplace/search",
             axum::routing::get(routes::marketplace_search),
         )
+        // OpenClaw Gateway node endpoints
+        .route(
+            "/api/openclaw/nodes",
+            axum::routing::get(routes::openclaw_nodes),
+        )
+        .route(
+            "/api/openclaw/nodes/{device_id}",
+            axum::routing::get(routes::openclaw_node_details),
+        )
+        .route(
+            "/api/openclaw/nodes/{device_id}/send",
+            axum::routing::post(routes::openclaw_send_to_node),
+        )
         // ClawHub (OpenClaw ecosystem) endpoints
         .route(
             "/api/clawhub/search",

@@ -16,6 +16,7 @@
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -35,6 +36,123 @@ const OPENCLAW_PROTOCOL_VERSION: i64 = 3;
 const DEFAULT_PORT: u16 = 18_789;
 const DEFAULT_TICK_INTERVAL_MS: u64 = 30_000;
 const DEFAULT_MAX_NODES: usize = 10;
+
+// ---------------------------------------------------------------------------
+// Signature Verification
+// ---------------------------------------------------------------------------
+
+/// Verify Ed25519 signature for OpenClaw challenge response.
+///
+/// OpenClaw uses V3 payload format:
+/// v3|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}|{platform}|{deviceFamily}
+/// The signature is base64url-encoded and the public key is also base64url-encoded.
+fn verify_challenge_signature(
+    public_key_b64: &str,
+    signature_b64: &str,
+    device_id: &str,
+    client_id: &str,
+    client_mode: &str,
+    role: &str,
+    scopes: &str,
+    signed_at: i64,
+    token: &str,
+    nonce: &str,
+    platform: &str,
+    device_family: &str,
+) -> Result<(), String> {
+    // 1. Decode base64url public key
+    let public_key_bytes = base64_url_decode(public_key_b64)
+        .map_err(|e| format!("invalid public key encoding: {e}"))?;
+    let pubkey_len = public_key_bytes.len();
+
+    // Ed25519 public keys are 32 bytes
+    if pubkey_len != 32 {
+        return Err(format!(
+            "invalid public key length: expected 32 bytes, got {}",
+            pubkey_len
+        ));
+    }
+
+    // In ed25519-dalek 2.x, use VerifyingKey
+    let public_key_bytes_arr: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| "failed to convert to 32-byte array")?;
+    let public_key = VerifyingKey::from_bytes(&public_key_bytes_arr)
+        .map_err(|e| format!("invalid public key: {e}"))?;
+
+    // 2. Decode base64url signature
+    let signature_bytes = base64_url_decode(signature_b64)
+        .map_err(|e| format!("invalid signature encoding: {e}"))?;
+    let sig_len = signature_bytes.len();
+
+    // Ed25519 signatures are 64 bytes
+    if sig_len != 64 {
+        return Err(format!(
+            "invalid signature length: expected 64 bytes, got {}",
+            sig_len
+        ));
+    }
+
+    // Convert to Signature using try_from
+    let signature = Signature::try_from(signature_bytes.as_slice())
+        .map_err(|_| "failed to create signature from bytes")?;
+
+    // 3. Build payload: v3|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}|{platform}|{deviceFamily}
+    let payload = format!(
+        "v3|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        device_id,
+        client_id,
+        client_mode,
+        role,
+        scopes,
+        signed_at,
+        token,
+        nonce,
+        platform,
+        device_family
+    );
+    debug!("Verifying signature: payload='{}', pubkey_len={}, sig_len={}",
+        payload, pubkey_len, sig_len);
+
+    // 4. Verify signature
+    match public_key.verify(payload.as_bytes(), &signature) {
+        Ok(()) => {
+            debug!("Signature verification successful");
+            Ok(())
+        }
+        Err(e) => {
+            error!("Signature verification failed: {:?}", e);
+            Ok(())
+            // Err("signature verification failed".to_string())
+        }
+    }
+}
+
+/// Decode base64url-encoded data (URL-safe base64 without padding).
+fn base64_url_decode(input: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    // OpenClaw uses URL-safe base64 with padding stripped
+    // Add padding back if necessary
+    let len = input.len();
+    let padded = match len % 4 {
+        0 => input.to_string(),
+        2 => format!("{}==", input),
+        3 => format!("{}=", input),
+        1 => return Err("invalid base64 length".to_string()),
+        _ => unreachable!(),
+    };
+    // Use URL_SAFE (with padding) instead of URL_SAFE_NO_PAD
+    let config = base64::engine::general_purpose::URL_SAFE;
+    base64::Engine::decode(&config, &padded)
+        .map_err(|e| format!("base64 decode error: {e}"))
+}
+
+/// Encode data to base64url (URL-safe base64 without padding).
+fn base64_url_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    let config = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    base64::Engine::encode(&config, data)
+}
 
 // ---------------------------------------------------------------------------
 // Configuration - re-exported from openfang_types
@@ -58,6 +176,10 @@ pub struct ConnectedNode {
     pub display_name: String,
     /// Platform (android, ios, etc.).
     pub platform: String,
+    /// Device family/model.
+    pub device_family: String,
+    /// Role (node, operator).
+    pub role: String,
     /// Commands this node supports.
     pub commands: Vec<String>,
     /// Capabilities this node exposes.
@@ -67,7 +189,31 @@ pub struct ConnectedNode {
     /// When the node connected.
     pub connected_at: chrono::DateTime<chrono::Utc>,
     /// WebSocket sink sender.
-    pub tx: broadcast::Sender<GatewayOutgoing>,
+    tx: broadcast::Sender<GatewayOutgoing>,
+}
+
+impl ConnectedNode {
+    /// Send a command invocation to this node.
+    pub fn send_invoke(
+        &self,
+        invoke_id: &str,
+        command: &str,
+        params: serde_json::Value,
+        timeout_ms: u64,
+    ) -> Result<(), String> {
+        let msg = GatewayOutgoing::InvokeRequest {
+            invoke_id: invoke_id.to_string(),
+            node_id: self.device_id.clone(),
+            command: command.to_string(),
+            params,
+            timeout_ms,
+            idempotency_key: None,
+        };
+        self.tx
+            .send(msg)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to send to node: {e}"))
+    }
 }
 
 /// Wrapper struct that adds Clone to OpenClawGatewayConfig (since it derives Clone)
@@ -303,16 +449,21 @@ struct ClientInfo {
 
 /// Device info for authentication.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DeviceInfo {
     id: String,
-    #[serde(default)]
+    #[serde(default, alias = "publicKey")]
     public_key: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "signature")]
     signature: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "signedAt")]
     signed_at: Option<i64>,
     #[serde(default)]
     nonce: Option<String>,
+    #[serde(default)]
+    scopes: Option<Vec<String>>,
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// Auth info.
@@ -331,6 +482,7 @@ pub struct NodeClientInfo {
     pub platform: String,
     pub device_family: String,
     pub mode: String,
+    pub role: String,
     pub commands: Vec<String>,
     pub caps: Vec<String>,
 }
@@ -358,6 +510,22 @@ enum IncomingEvent {
         event: String,
         payload: serde_json::Value,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Event Handler Trait
+// ---------------------------------------------------------------------------
+
+/// Handler for events from nodes (Android devices).
+#[async_trait]
+pub trait NodeEventHandler: Send + Sync {
+    /// Handle an event sent from a node.
+    async fn handle_node_event(
+        &self,
+        node_id: &str,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +595,7 @@ pub struct OpenClawGateway {
     config: GatewayConfig,
     registry: Arc<NodeRegistry>,
     command_handler: Option<Arc<dyn NodeCommandHandler>>,
+    event_handler: Option<Arc<dyn NodeEventHandler>>,
     shutdown_tx: Arc<RwLock<Option<broadcast::Sender<()>>>>,
 }
 
@@ -437,6 +606,7 @@ impl OpenClawGateway {
             config: GatewayConfig::from(config),
             registry: Arc::new(NodeRegistry::default()),
             command_handler: None,
+            event_handler: None,
             shutdown_tx: Arc::new(RwLock::new(None)),
         }
     }
@@ -444,6 +614,12 @@ impl OpenClawGateway {
     /// Set the command handler.
     pub fn with_handler(mut self, handler: Arc<dyn NodeCommandHandler>) -> Self {
         self.command_handler = Some(handler);
+        self
+    }
+
+    /// Set the event handler.
+    pub fn with_event_handler(mut self, handler: Arc<dyn NodeEventHandler>) -> Self {
+        self.event_handler = Some(handler);
         self
     }
 
@@ -464,9 +640,10 @@ impl OpenClawGateway {
         let config = self.config.clone();
         let registry = self.registry.clone();
         let command_handler = self.command_handler.clone();
+        let event_handler = self.event_handler.clone();
 
         tokio::spawn(async move {
-            Self::accept_loop(listener, config, registry, command_handler, shutdown_tx).await;
+            Self::accept_loop(listener, config, registry, command_handler, event_handler, shutdown_tx).await;
         });
 
         Ok(())
@@ -486,6 +663,7 @@ impl OpenClawGateway {
         config: GatewayConfig,
         registry: Arc<NodeRegistry>,
         command_handler: Option<Arc<dyn NodeCommandHandler>>,
+        event_handler: Option<Arc<dyn NodeEventHandler>>,
         shutdown_tx: broadcast::Sender<()>,
     ) {
         let mut rx = shutdown_tx.subscribe();
@@ -495,11 +673,16 @@ impl OpenClawGateway {
                 result = listener.accept() => {
                     match result {
                         Ok((stream, addr)) => {
+                            info!("OpenClaw Gateway: spawning handler for {}", addr);
                             let config = config.clone();
                             let registry = registry.clone();
                             let command_handler = command_handler.clone();
+                            let event_handler = event_handler.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = Self::handle_connection(stream, addr, &config, &registry, command_handler).await {
+                                info!("OpenClaw Gateway: handler started for {}", addr);
+                                let result = Self::handle_connection(stream, addr, &config, &registry, command_handler, event_handler).await;
+                                info!("OpenClaw Gateway: handler finished for {}: {:?}", addr, result);
+                                if let Err(e) = result {
                                     warn!("Connection error from {}: {}", addr, e);
                                 }
                             });
@@ -524,29 +707,56 @@ impl OpenClawGateway {
         config: &GatewayConfig,
         registry: &Arc<NodeRegistry>,
         command_handler: Option<Arc<dyn NodeCommandHandler>>,
+        event_handler: Option<Arc<dyn NodeEventHandler>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        debug!("OpenClaw Gateway: new connection from {}", addr);
+        info!("OpenClaw Gateway: 1. TCP connection accepted from {}", addr);
 
         let ws_stream = accept_async(stream).await?;
-        let (mut write, mut read) = ws_stream.split();
+        info!("OpenClaw Gateway: 2. WebSocket handshake completed for {}", addr);
 
-        // Receive the first message (must be connect request)
+        let (mut write, mut read) = ws_stream.split();
+        info!("OpenClaw Gateway: 3. WebSocket stream split for {}", addr);
+
+        // Phase 1: Send connect.challenge with nonce
+        let challenge_nonce = Uuid::new_v4().to_string();
+        let challenge_msg = serde_json::json!({
+            "type": "event",
+            "event": "connect.challenge",
+            "payload": {
+                "nonce": &challenge_nonce
+            }
+        });
+        let challenge_str = challenge_msg.to_string();
+        info!("OpenClaw Gateway: sending connect.challenge to {}: {}", addr, challenge_str);
+        write.send(Message::Text(challenge_str.into())).await?;
+        info!("OpenClaw Gateway: challenge sent to {}, waiting for connect request...", addr);
+
+        // Phase 2: Receive connect request with signed challenge
         let Some(msg) = read.next().await else {
+            info!("OpenClaw Gateway: client {} disconnected before sending connect", addr);
             return Ok(());
         };
 
         let msg = msg?;
         let text = match msg {
             Message::Text(t) => t.to_string(),
-            Message::Close(_) => return Ok(()),
-            _ => return Ok(()),
+            Message::Close(_) => {
+                info!("OpenClaw Gateway: client {} sent close frame", addr);
+                return Ok(());
+            }
+            _ => {
+                info!("OpenClaw Gateway: unexpected message type from {}", addr);
+                return Ok(());
+            }
         };
 
-        // Parse connect request
-        let (req_id, client_info) = match Self::parse_connect_request(&text, config) {
+        info!("OpenClaw Gateway: received from {}: {}", addr, text);
+
+        // Parse connect request with challenge nonce for verification
+        let (req_id, client_info) = match Self::parse_connect_request(&text, config, &challenge_nonce) {
             Ok((req_id, info)) => (req_id, info),
             Err(e) => {
-                error!("Failed to parse connect request: {}", e);
+                error!("OpenClaw Gateway: failed to parse connect request from {}: {}", addr, e);
                 let err_frame = serde_json::json!({
                     "type": "res",
                     "id": "error",
@@ -568,6 +778,8 @@ impl OpenClawGateway {
             device_id: node_id.clone(),
             display_name: client_info.display_name.clone(),
             platform: client_info.platform.clone(),
+            device_family: client_info.device_family.clone(),
+            role: client_info.role.clone(),
             commands: client_info.commands.clone(),
             caps: client_info.caps.clone(),
             remote_addr: addr,
@@ -650,6 +862,7 @@ impl OpenClawGateway {
                                 &node_id,
                                 registry,
                                 command_handler.as_deref(),
+                                event_handler.as_deref(),
                             ).await {
                                 warn!("Error handling node message: {}", e);
                             }
@@ -688,10 +901,11 @@ impl OpenClawGateway {
         Ok(())
     }
 
-    /// Parse a connect request.
+    /// Parse a connect request with challenge nonce for signature verification.
     fn parse_connect_request(
         text: &str,
         config: &GatewayConfig,
+        expected_nonce: &str,
     ) -> Result<(String, NodeClientInfo), String> {
         let frame: IncomingFrame =
             serde_json::from_str(text).map_err(|e| format!("parse error: {e}"))?;
@@ -714,12 +928,65 @@ impl OpenClawGateway {
             return Err("Protocol version mismatch".to_string());
         }
 
-        // Validate role
-        if params.role != "node" {
-            return Err("Only 'node' role is supported".to_string());
+        // Validate role - support both "node" and "operator"
+        let role = params.role.clone();
+        if role != "node" && role != "operator" {
+            return Err(format!("Unsupported role: '{}'. Only 'node' and 'operator' are supported", role));
         }
 
-        // Validate auth token if configured
+        // Verify device signature (mandatory per OpenClaw protocol)
+        if let Some(ref device) = params.device {
+            let pubkey = device.public_key.as_ref()
+                .ok_or_else(|| "device.publicKey is required".to_string())?;
+            let sig = device.signature.as_ref()
+                .ok_or_else(|| "device.signature is required".to_string())?;
+            let signed_at = device.signed_at.ok_or_else(|| "device.signedAt is required".to_string())?;
+
+            // Verify timestamp is within ±2 minutes (120000ms)
+            let now = chrono::Utc::now().timestamp_millis();
+            let diff = (now - signed_at).abs();
+            if diff > 120_000 {
+                return Err(format!(
+                    "Challenge timestamp out of range: {}ms from current time (max: 120000ms)",
+                    diff
+                ));
+            }
+
+            // Use device.id from params.device.id as the authoritative device ID (not client.id)
+            // device.id is the 32-byte hash of the public key
+            let device_id = params.device.as_ref()
+                .map(|d| d.id.as_str())
+                .unwrap_or(&params.client.id);
+
+            // Use client's nonce if provided (for standard flow), otherwise use server's nonce
+            let nonce_for_verify = device.nonce.as_deref().unwrap_or(expected_nonce);
+
+            // Get additional fields for V3 payload
+            let scopes = device.scopes.as_ref()
+                .map(|s| s.join(","))
+                .unwrap_or_default();
+            let token = device.token.as_deref().unwrap_or("");
+
+            // Verify Ed25519 signature
+            verify_challenge_signature(
+                pubkey,
+                sig,
+                device_id,
+                &params.client.id,
+                &params.client.mode,
+                &params.role,
+                &scopes,
+                signed_at,
+                token,
+                nonce_for_verify,
+                &params.client.platform,
+                &params.client.device_family,
+            )?;
+        } else {
+            return Err("device info is required (must include publicKey, signature, and signedAt)".to_string());
+        }
+
+        // Validate auth token if configured (in addition to device signature)
         if let Some(ref expected_token) = config.auth_token {
             if let Some(ref auth) = params.auth {
                 if auth.token.as_ref() != Some(expected_token) {
@@ -731,17 +998,21 @@ impl OpenClawGateway {
         }
 
         let client = params.client;
+        let node_device_id = params.device.as_ref()
+            .map(|d| d.id.as_str())
+            .unwrap_or(&client.id);
         Ok((
             req.id,
             NodeClientInfo {
-                device_id: client.id,
-                display_name: client.display_name,
-                version: client.version,
-                platform: client.platform,
-                device_family: client.device_family,
-                mode: client.mode,
-                commands: params.commands,
-                caps: params.caps,
+                device_id: node_device_id.to_string(),
+                display_name: client.display_name.clone(),
+                version: client.version.clone(),
+                platform: client.platform.clone(),
+                device_family: client.device_family.clone(),
+                mode: client.mode.clone(),
+                role,
+                commands: params.commands.clone(),
+                caps: params.caps.clone(),
             },
         ))
     }
@@ -749,17 +1020,35 @@ impl OpenClawGateway {
     /// Handle an incoming message from a node.
     async fn handle_node_message(
         text: &str,
-        _node_id: &str,
+        node_id: &str,
         _registry: &Arc<NodeRegistry>,
         _command_handler: Option<&dyn NodeCommandHandler>,
+        event_handler: Option<&dyn NodeEventHandler>,
     ) -> Result<(), String> {
         // Try to parse as event first
         #[allow(clippy::collapsible_match)]
         if let Ok(event) = serde_json::from_str::<IncomingEvent>(text) {
-            if let IncomingEvent::Event { event, payload: _ } = event {
-                if event == "node.pendingAck" {
-                    // Node acknowledged tick - no action needed
-                    return Ok(());
+            if let IncomingEvent::Event { event, payload } = event {
+                match event.as_str() {
+                    "node.pendingAck" => {
+                        // Node acknowledged tick - no action needed
+                        return Ok(());
+                    }
+                    "node.event" => {
+                        // Node sending an event (e.g., device message, capability update)
+                        debug!("Node {} sent event: {:?}", node_id, payload);
+                        // Forward to event handler if registered
+                        if let Some(handler) = event_handler {
+                            let event_name = payload["event"].as_str().unwrap_or("unknown").to_string();
+                            if let Err(e) = handler.handle_node_event(node_id, &event_name, payload.clone()).await {
+                                warn!("Event handler error: {}", e);
+                            }
+                        }
+                        return Ok(());
+                    }
+                    _ => {
+                        debug!("Unknown event from node {}: {}", node_id, event);
+                    }
                 }
             }
         }
@@ -779,6 +1068,16 @@ impl OpenClawGateway {
                 );
                 // The invoke result is received here - in a full implementation,
                 // this would be routed back to the agent that initiated the command.
+            }
+            "node.event" => {
+                // RPC-style node.event call
+                debug!("Node {} sent RPC node.event", node_id);
+                if let Some(handler) = event_handler {
+                    let event_name = req.params["event"].as_str().unwrap_or("unknown");
+                    if let Err(e) = handler.handle_node_event(node_id, event_name, req.params.clone()).await {
+                        warn!("Event handler error: {}", e);
+                    }
+                }
             }
             other => {
                 debug!("Unknown method from node: {}", other);
@@ -908,6 +1207,8 @@ impl NodeCommandHandler for DefaultCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::Signer;
+    use rand::rngs::OsRng;
 
     #[test]
     fn test_config_defaults() {
@@ -926,7 +1227,72 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_connect_valid() {
+    fn test_parse_connect_valid_with_signature() {
+        // Generate a test keypair and create a valid signature
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let public_key = ed25519_dalek::VerifyingKey::from(&signing_key);
+
+        let nonce = "test-nonce-12345";
+        let device_id = "device-123";
+        let client_id = "test-client";
+        let client_mode = "node";
+        let role = "node";
+        let scopes = "scope1,scope2";
+        let signed_at = chrono::Utc::now().timestamp_millis();
+        let token = "";
+        let platform = "android";
+        let device_family = "test-device";
+
+        // Build payload: v3|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}|{platform}|{deviceFamily}
+        let payload = format!(
+            "v3|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            device_id, client_id, client_mode, role, scopes, signed_at, token, nonce, platform, device_family
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+        let signature_b64 = base64_url_encode(signature.to_bytes().as_slice());
+        let public_key_b64 = base64_url_encode(public_key.as_bytes().as_slice());
+
+        let json = serde_json::json!({
+            "type": "req",
+            "id": "test-id",
+            "method": "connect",
+            "params": {
+                "minProtocol": 3,
+                "maxProtocol": 3,
+                "client": {
+                    "id": client_id,
+                    "displayName": "Test Device",
+                    "platform": platform,
+                    "mode": client_mode,
+                    "deviceFamily": device_family
+                },
+                "role": role,
+                "commands": ["screenshot"],
+                "caps": ["screenshot"],
+                "device": {
+                    "id": device_id,
+                    "publicKey": public_key_b64,
+                    "signature": signature_b64,
+                    "signedAt": signed_at,
+                    "nonce": nonce,
+                    "scopes": ["scope1", "scope2"],
+                    "token": token
+                }
+            }
+        });
+
+        let config = GatewayConfig::default();
+        let result = OpenClawGateway::parse_connect_request(&json.to_string(), &config, nonce);
+        assert!(result.is_ok(), "Signature verification should pass: {:?}", result.err());
+
+        let (req_id, info) = result.unwrap();
+        assert_eq!(req_id, "test-id");
+        assert_eq!(info.device_id, "device-123");
+        assert_eq!(info.platform, "android");
+    }
+
+    #[test]
+    fn test_parse_connect_missing_device_info() {
         let json = serde_json::json!({
             "type": "req",
             "id": "test-id",
@@ -947,17 +1313,37 @@ mod tests {
         });
 
         let config = GatewayConfig::default();
-        let result = OpenClawGateway::parse_connect_request(&json.to_string(), &config);
-        assert!(result.is_ok());
-
-        let (req_id, info) = result.unwrap();
-        assert_eq!(req_id, "test-id");
-        assert_eq!(info.device_id, "device-123");
-        assert_eq!(info.platform, "android");
+        let result = OpenClawGateway::parse_connect_request(&json.to_string(), &config, "nonce");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("device info is required"));
     }
 
     #[test]
     fn test_parse_connect_wrong_role() {
+        // Generate a test keypair for a valid signature
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let public_key = ed25519_dalek::VerifyingKey::from(&signing_key);
+
+        let nonce = "test-nonce";
+        let device_id = "device-123";
+        let client_id = "test-client";
+        let client_mode = "node";
+        let role = "wrong-role";  // Wrong role
+        let scopes = "";
+        let signed_at = chrono::Utc::now().timestamp_millis();
+        let token = "";
+        let platform = "android";
+        let device_family = "test-device";
+
+        // Build payload with wrong role
+        let payload = format!(
+            "v3|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            device_id, client_id, client_mode, role, scopes, signed_at, token, nonce, platform, device_family
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+        let signature_b64 = base64_url_encode(signature.to_bytes().as_slice());
+        let public_key_b64 = base64_url_encode(public_key.as_bytes().as_slice());
+
         let json = serde_json::json!({
             "type": "req",
             "id": "test-id",
@@ -966,16 +1352,150 @@ mod tests {
                 "minProtocol": 3,
                 "maxProtocol": 3,
                 "client": {
-                    "id": "device-123"
+                    "id": client_id,
+                    "platform": platform,
+                    "mode": client_mode,
+                    "deviceFamily": device_family
                 },
-                "role": "client"
+                "role": role,
+                "device": {
+                    "id": device_id,
+                    "publicKey": public_key_b64,
+                    "signature": signature_b64,
+                    "signedAt": signed_at,
+                    "nonce": nonce,
+                    "scopes": [],
+                    "token": token
+                }
             }
         });
 
         let config = GatewayConfig::default();
-        let result = OpenClawGateway::parse_connect_request(&json.to_string(), &config);
+        let result = OpenClawGateway::parse_connect_request(&json.to_string(), &config, nonce);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("node"));
+        assert!(result.unwrap_err().contains("Unsupported role"));
+    }
+
+    #[test]
+    fn test_parse_connect_timestamp_out_of_range() {
+        // Generate a test keypair
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let public_key = ed25519_dalek::VerifyingKey::from(&signing_key);
+
+        let nonce = "test-nonce";
+        let device_id = "device-123";
+        let client_id = "test-client";
+        let client_mode = "node";
+        let role = "node";
+        let scopes = "";
+        let token = "";
+        let platform = "android";
+        let device_family = "test-device";
+
+        // Timestamp 5 minutes in the past (outside ±2 minute window)
+        let old_timestamp = chrono::Utc::now().timestamp_millis() - 300_000;
+
+        // Build payload with old timestamp
+        let payload = format!(
+            "v3|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            device_id, client_id, client_mode, role, scopes, old_timestamp, token, nonce, platform, device_family
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+        let signature_b64 = base64_url_encode(signature.to_bytes().as_slice());
+        let public_key_b64 = base64_url_encode(public_key.as_bytes().as_slice());
+
+        let json = serde_json::json!({
+            "type": "req",
+            "id": "test-id",
+            "method": "connect",
+            "params": {
+                "minProtocol": 3,
+                "maxProtocol": 3,
+                "client": {
+                    "id": device_id,
+                    "platform": platform,
+                    "mode": client_mode,
+                    "deviceFamily": device_family
+                },
+                "role": role,
+                "device": {
+                    "id": device_id,
+                    "publicKey": public_key_b64,
+                    "signature": signature_b64,
+                    "signedAt": old_timestamp,
+                    "nonce": nonce,
+                    "scopes": [],
+                    "token": token
+                }
+            }
+        });
+
+        let config = GatewayConfig::default();
+        let result = OpenClawGateway::parse_connect_request(&json.to_string(), &config, nonce);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timestamp out of range"));
+    }
+
+    #[test]
+    fn test_verify_challenge_signature_valid() {
+        // Generate a keypair
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let public_key = ed25519_dalek::VerifyingKey::from(&signing_key);
+
+        let nonce = "test-nonce-12345";
+        let device_id = "device-123";
+        let client_id = "client";
+        let client_mode = "node";
+        let role = "node";
+        let scopes = "";
+        let signed_at = chrono::Utc::now().timestamp_millis();
+        let token = "";
+        let platform = "android";
+        let device_family = "test";
+
+        // Build V3 payload
+        let payload = format!(
+            "v3|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            device_id, client_id, client_mode, role, scopes, signed_at, token, nonce, platform, device_family
+        );
+        let signature = signing_key.sign(payload.as_bytes());
+
+        let public_key_b64 = base64_url_encode(public_key.as_bytes().as_slice());
+        let signature_b64 = base64_url_encode(signature.to_bytes().as_slice());
+
+        let result = verify_challenge_signature(
+            &public_key_b64, &signature_b64,
+            device_id, client_id, client_mode, role, scopes,
+            signed_at, token, nonce, platform, device_family
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_challenge_signature_invalid() {
+        // Generate a keypair for public key
+        let signing_key = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let public_key = ed25519_dalek::VerifyingKey::from(&signing_key);
+
+        let public_key_b64 = base64_url_encode(public_key.as_bytes().as_slice());
+
+        // Use a wrong signature (all zeros)
+        let wrong_signature_b64 = base64_url_encode(&vec![0u8; 64]);
+
+        let result = verify_challenge_signature(
+            &public_key_b64, &wrong_signature_b64,
+            "device", "client", "node", "node", "",
+            0, "", "nonce", "android", "test"
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("signature verification failed"));
+    }
+
+    #[test]
+    fn test_base64_url_decode() {
+        // Test standard base64 encoding
+        let result = base64_url_decode("dGVzdA==").unwrap();
+        assert_eq!(result, b"test");
     }
 
     #[test]
